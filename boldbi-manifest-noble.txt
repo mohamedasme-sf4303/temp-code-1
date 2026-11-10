@@ -31,6 +31,7 @@ RUN apt-get update && \
       python3 \
       python3-pip \
       procps \
+      libatomic1 \
       libasound2t64 \
       libatk1.0-0 \
       libc6 \
@@ -113,7 +114,6 @@ RUN if [ "$INSTALL_POSTGRES" = "true" ]; then \
 
 RUN apt-get purge -y --auto-remove linux-libc-dev || true
 RUN rm -rf /var/lib/apt/lists/*
-
 # ====================================================
 # Python Packages
 # ====================================================
@@ -150,7 +150,8 @@ RUN pip install duckdb --break-system-packages && \
     pip install "dlt[snowflake]" --break-system-packages && \
     pip install "dlt[clickhouse]" --break-system-packages && \
     pip install elasticsearch==8.15.1 --break-system-packages && \
-    pip install google-ads==28.0.0 --break-system-packages
+    pip install google-ads==28.0.0 --break-system-packages  && \
+    pip install --no-cache-dir --break-system-packages --upgrade 'anyio>=4.14.2'
 
 # ====================================================
 # Environment Variables
