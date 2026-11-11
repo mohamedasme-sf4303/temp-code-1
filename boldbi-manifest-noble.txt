@@ -78,21 +78,24 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # ====================================================
-# ARM64 Chromium
+# Chromium for export (PDF / image / PPT) - amd64 and arm64
 # (noble's chromium-browser apt package is a snap stub that
-#  fails inside containers; install the real arm64 build
-#  via Playwright and symlink to a stable path)
+#  fails inside containers, so Playwright's Chromium build is
+#  used on every architecture: same install path, same
+#  version, native binary per TARGETARCH. Installed before
+#  COPY so the layer stays cached across app changes.)
 # ====================================================
 
-RUN if [ "$TARGETARCH" = "arm64" ]; then \
-      mkdir -p /application/bi/dataservice/puppeteer/Chrome && \
-      python3 -m pip install --break-system-packages --no-cache-dir playwright && \
-      PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \
-        python3 -m playwright install --with-deps chromium && \
-      ln -sf /opt/ms-playwright/chromium-*/chrome-linux/chrome /application/bi/dataservice/puppeteer/Chrome/chrome && \
-      chmod -R a+rX /opt/ms-playwright && \
-      apt-get clean && rm -rf /var/lib/apt/lists/*; \
-    fi
+ARG PLAYWRIGHT_VERSION=1.65.0
+
+RUN set -e; \
+    case "$TARGETARCH" in amd64|arm64) ;; \
+      *) echo "Unsupported TARGETARCH=$TARGETARCH"; exit 1 ;; esac; \
+    python3 -m pip install --break-system-packages --no-cache-dir "playwright==${PLAYWRIGHT_VERSION}"; \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \
+      python3 -m playwright install --with-deps --no-shell chromium; \
+    chmod -R a+rX /opt/ms-playwright; \
+    apt-get clean; rm -rf /var/lib/apt/lists/*
 
 # ====================================================
 # Optional PostgreSQL Installation
@@ -173,18 +176,25 @@ EXPOSE 443
 COPY /application .
 
 # ====================================================
-# AMD64 Chrome Setup
+# Link Playwright Chromium to the path export uses
+# (Exporting.PuppeteerPath = .../puppeteer/Chrome/chrome).
+# The binary folder differs per arch (chrome-linux on amd64,
+# chrome-linux-arm64 on arm64), so resolve it with find, then
+# fail the build unless Chromium can actually print a PDF.
+# The bundled chrome-linux64.zip is not used in the image.
 # ====================================================
 
-RUN if [ "$TARGETARCH" = "amd64" ]; then \
-      cd /application/bi/dataservice/puppeteer/Chrome && \
-      unzip chrome-linux64.zip && \
-      cp -r chrome-linux64/. . && \
-      rm -rf chrome-linux64 chrome-linux64.zip && \
-      chmod -R 777 /application/bi/dataservice/puppeteer/Chrome; \
-    else \
-      echo "ARM64 build - using system Chromium"; \
-    fi
+RUN set -e; CHROME_DIR=/application/bi/dataservice/puppeteer/Chrome; \
+    BIN=$(find /opt/ms-playwright -path '*/chromium-*/chrome-linux*/chrome' -type f | head -n1); \
+    [ -n "$BIN" ] && [ -x "$BIN" ] || { echo "ERROR: Playwright Chromium not found"; exit 1; }; \
+    mkdir -p "$CHROME_DIR"; rm -rf "$CHROME_DIR"/*; \
+    ln -sf "$BIN" "$CHROME_DIR/chrome"; \
+    chmod -R a+rX "$CHROME_DIR"; \
+    "$CHROME_DIR/chrome" --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage \
+      --print-to-pdf=/tmp/smoke.pdf "data:text/html,<h1>ok</h1>" >/dev/null 2>&1 || true; \
+    test -s /tmp/smoke.pdf || { echo "ERROR: Chromium smoke test failed ($TARGETARCH)"; exit 1; }; \
+    rm -f /tmp/smoke.pdf; \
+    echo "Chromium OK ($TARGETARCH): $("$CHROME_DIR/chrome" --version)"
 
 RUN chmod +x ./entrypoint.sh
 
