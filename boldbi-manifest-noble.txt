@@ -80,22 +80,41 @@ RUN apt-get update && \
 # ====================================================
 # Chromium for export (PDF / image / PPT) - amd64 and arm64
 # (noble's chromium-browser apt package is a snap stub that
-#  fails inside containers, so Playwright's Chromium build is
-#  used on every architecture: same install path, same
-#  version, native binary per TARGETARCH. Installed before
-#  COPY so the layer stays cached across app changes.)
+#  fails inside containers. One pinned Chrome for Testing
+#  build is downloaded for every architecture: same version,
+#  same source, native binary per TARGETARCH. No Playwright
+#  package is installed. Installed before COPY so the layer
+#  stays cached across app changes.)
+#
+# CHROME_VERSION must follow the PuppeteerSharp package:
+#   PuppeteerSharp 25.15.0 -> Chrome 155.0.8059.84
+# On a PuppeteerSharp upgrade/downgrade, set this to the new
+# release's pinned version (Chrome.DefaultBuildId) and confirm
+# both zips exist:
+#   <base>/<version>/linux64/chrome-linux64.zip
+#   <base>/<version>/linux-arm64/chrome-linux-arm64.zip
+# CHROME_DOWNLOAD_BASE can point to an internal mirror.
 # ====================================================
 
-ARG PLAYWRIGHT_VERSION=1.65.0
+ARG CHROME_VERSION=155.0.8059.84
+ARG CHROME_DOWNLOAD_BASE=https://cdn.playwright.dev/builds/cft
 
 RUN set -e; \
-    case "$TARGETARCH" in amd64|arm64) ;; \
-      *) echo "Unsupported TARGETARCH=$TARGETARCH"; exit 1 ;; esac; \
-    python3 -m pip install --break-system-packages --no-cache-dir "playwright==${PLAYWRIGHT_VERSION}"; \
-    PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \
-      python3 -m playwright install --with-deps --no-shell chromium; \
-    chmod -R a+rX /opt/ms-playwright; \
-    apt-get clean; rm -rf /var/lib/apt/lists/*
+    case "$TARGETARCH" in \
+      amd64) CHROME_PLATFORM=linux64;     CHROME_FOLDER=chrome-linux64 ;; \
+      arm64) CHROME_PLATFORM=linux-arm64; CHROME_FOLDER=chrome-linux-arm64 ;; \
+      *) echo "Unsupported TARGETARCH=$TARGETARCH"; exit 1 ;; \
+    esac; \
+    URL="${CHROME_DOWNLOAD_BASE}/${CHROME_VERSION}/${CHROME_PLATFORM}/${CHROME_FOLDER}.zip"; \
+    echo "Downloading Chromium ${CHROME_VERSION} (${TARGETARCH}): ${URL}"; \
+    curl -fsSL --retry 3 -o /tmp/chrome.zip "$URL"; \
+    mkdir -p /opt/chromium; \
+    unzip -q /tmp/chrome.zip -d /opt/chromium; \
+    rm -f /tmp/chrome.zip; \
+    mv "/opt/chromium/${CHROME_FOLDER}" "/opt/chromium/${CHROME_VERSION}"; \
+    [ -x "/opt/chromium/${CHROME_VERSION}/chrome" ] || { echo "ERROR: chrome binary missing in ${URL}"; exit 1; }; \
+    ln -sfn "/opt/chromium/${CHROME_VERSION}" /opt/chromium/current; \
+    chmod -R a+rX /opt/chromium
 
 # ====================================================
 # Optional PostgreSQL Installation
@@ -176,17 +195,15 @@ EXPOSE 443
 COPY /application .
 
 # ====================================================
-# Link Playwright Chromium to the path export uses
-# (Exporting.PuppeteerPath = .../puppeteer/Chrome/chrome).
-# The binary folder differs per arch (chrome-linux on amd64,
-# chrome-linux-arm64 on arm64), so resolve it with find, then
-# fail the build unless Chromium can actually print a PDF.
+# Link the pinned Chromium to the path export uses
+# (Exporting.PuppeteerPath = .../puppeteer/Chrome/chrome),
+# then fail the build unless Chromium can actually print a PDF.
 # The bundled chrome-linux64.zip is not used in the image.
 # ====================================================
 
 RUN set -e; CHROME_DIR=/application/bi/dataservice/puppeteer/Chrome; \
-    BIN=$(find /opt/ms-playwright -path '*/chromium-*/chrome-linux*/chrome' -type f | head -n1); \
-    [ -n "$BIN" ] && [ -x "$BIN" ] || { echo "ERROR: Playwright Chromium not found"; exit 1; }; \
+    BIN=/opt/chromium/current/chrome; \
+    [ -x "$BIN" ] || { echo "ERROR: Chromium not found at $BIN"; exit 1; }; \
     mkdir -p "$CHROME_DIR"; rm -rf "$CHROME_DIR"/*; \
     ln -sf "$BIN" "$CHROME_DIR/chrome"; \
     chmod -R a+rX "$CHROME_DIR"; \
